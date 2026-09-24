@@ -1,13 +1,10 @@
-import logging
-from fastapi import FastAPI, Form, BackgroundTasks
-from typing_extensions import Annotated
+from fastapi import FastAPI, BackgroundTasks
+from dotenv import load_dotenv
 
 from conf.logging import CustomLoggers
-from service.api.image_service import ImageService
 from conf.config import Config
-from models.models import ImageUploadRequest, ReadingExtractionRequest, ReadingExtractionResponse, FeedbackRequest, FeedbackResponse
-
-from dotenv import load_dotenv
+from service.api.image_service import ImageService
+from models.models import ReadingExtractionRequest, ReadingExtractionResponse, FeedbackRequest, FeedbackResponse
 
 load_dotenv()
 app = FastAPI()

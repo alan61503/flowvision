@@ -1,86 +1,59 @@
 # Overview
 
-### Purpose and Scope <a href="#purpose-and-scope" id="purpose-and-scope"></a>
+FlowVision is a REST service that reads water meters from photos. A client sends the URL of a meter image, and FlowVision downloads it, checks that it is usable, detects the odometer digits, and returns the reading along with confidence scores. Clients can then send feedback on whether the reading was correct.
 
-FlowVision is an AI-powered meter reading extraction service that processes water meter images to automatically extract numeric readings. The system provides a REST API for image upload, reading extraction, and feedback collection, supporting multiple AI vision backends for flexible deployment scenarios.
+It runs three local models (no external AI APIs), and runs on CPU or GPU.
 
-This document provides a high-level overview of the FlowVision system architecture, core components, and processing workflow. For detailed API documentation, see [API Reference](api-reference.md).
+* [Getting Started](getting-started.md): install, configure and run the service
+* [Architecture Overview](architecture-overview.md): components, the processing pipeline and storage
+* [API Reference](api-reference.md): endpoints, request and response formats, status values
+* [OpenAPI spec](flowvision_api_spec.yml): machine-readable API definition
 
-### System Architecture <a href="#system-architecture" id="system-architecture"></a>
+### How a reading is extracted <a href="#how-a-reading-is-extracted" id="how-a-reading-is-extracted"></a>
 
-FlowVision follows a layered microservices architecture with the `ImageService` class serving as the central orchestrator. The system supports pluggable AI vision backends and maintains comprehensive audit trails through asynchronous metadata storage.
+```mermaid
+flowchart LR
+    A[Image URL] --> B[Download image]
+    B --> C{Quality check<br/>FastAI: good / bad}
+    C -- bad --> U1[UNCLEAR<br/>image quality too poor]
+    C -- good --> D[Enhance image<br/>sharpen + CLAHE]
+    D --> E{Digit detection<br/>YOLO11 OBB}
+    E -- no digits --> U2[UNCLEAR<br/>no digits detected]
+    E -- digits --> F[Remove duplicates,<br/>sort left to right]
+    F --> G[Last-digit colour<br/>FastAI: black / red]
+    G --> S[SUCCESS<br/>reading + confidences]
+```
 
-**System Components Architecture**
+| Stage | Model file (`src/models/`) | Output |
+| --- | --- | --- |
+| Quality check | `bfm_fastai` | `good` or `bad`, with confidence |
+| Digit detection | `individual_number_recognition_yolo11l.pt` | One oriented box per digit, classes `0`–`9` |
+| Last-digit colour | `color_classification_fastai` | `black` or `red`, with confidence |
 
-<figure><img src=".gitbook/assets/Screenshot 2025-07-28 at 12.09.14 PM.png" alt=""><figcaption></figcaption></figure>
+The last-digit colour tells the client whether the rightmost digit is a red (fractional) wheel, which it can use to place the decimal point. The service itself returns the digits only, with no decimal point.
 
+### Endpoints <a href="#endpoints" id="endpoints"></a>
 
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/` | Liveness check |
+| `POST` | `/flowvision/v1/extract-reading` | Extract a reading from an image URL |
+| `POST` | `/flowvision/v1/feedback` | Record whether a reading was correct |
 
-### Request Processing Flow <a href="#request-processing-flow" id="request-processing-flow"></a>
+Requests and responses are written to PostgreSQL in the background for auditing and model improvement. If the database is unreachable, the API still answers and the write failures are logged.
 
-The meter reading extraction follows a comprehensive pipeline with quality gates, AI processing, and asynchronous metadata persistence. The `ImageService.extract_reading()` method orchestrates the entire workflow.
+### Repository layout <a href="#repository-layout" id="repository-layout"></a>
 
-**Extraction Request Processing Flow**
-
-<figure><img src=".gitbook/assets/Screenshot 2025-07-28 at 12.09.56 PM.png" alt=""><figcaption></figcaption></figure>
-
-### Core Components <a href="#core-components" id="core-components"></a>
-
-#### ImageService Class <a href="#imageservice-class" id="imageservice-class"></a>
-
-The `ImageService` class serves as the central orchestrator for all meter reading extraction operations. It coordinates between vision services, handles image preprocessing, manages quality gates, and ensures proper metadata persistence.
-
-| Component                  | Purpose                                                        | Key Methods                                                   |
-| -------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------- |
-| **Vision Model Selection** | Instantiates appropriate vision service based on configuration | `__init__()` with model routing logic                         |
-| **Image Preprocessing**    | Resizes, crops, and prepares images for AI processing          | `preprocess_image()`, `resize_image()`, `crop_image()`        |
-| **Quality Assessment**     | Prevents expensive AI processing on poor quality images        | `classify_bfm_image()` integration                            |
-| **Reading Extraction**     | Orchestrates the complete extraction pipeline                  | `extract_reading()`                                           |
-| **Feedback Logging**       | Handles user feedback for model improvement                    | `log_feedback()`                                              |
-| **Error Handling**         | Manages custom and system exceptions                           | `handle_custom_http_exception()`, `handle_other_exceptions()` |
-
-#### Vision Service Strategy <a href="#vision-service-strategy" id="vision-service-strategy"></a>
-
-FlowVision implements a strategy pattern for vision services, allowing runtime selection between different AI backends based on configuration. Each service implements a common `extract()` interface but uses different underlying models and processing approaches.
-
-| Vision Service               | Model Type                   | Processing Approach                   | Configuration Key             |
-| ---------------------------- | ---------------------------- | ------------------------------------- | ----------------------------- |
-| **OpenAIVisionService**      | GPT-4o Vision API            | Cloud-based vision-language model     | `vision_model: "gpt-4o"`      |
-| **QwenVisionService**        | Qwen2-VL-2B-Instruct         | Local inference with CUDA/MPS support | `vision_model: "qwen"`        |
-| **InceptionV3VisionService** | CNN + YOLO + FastAI pipeline | Multi-stage specialized models        | `vision_model: "inceptionv3"` |
-
-The vision service selection logic is implemented in `ImageService.__init__()` with configuration-driven instantiation:
-
-#### Data Processing Pipeline <a href="#data-processing-pipeline" id="data-processing-pipeline"></a>
-
-The system implements a sophisticated multi-stage pipeline with quality gates and specialized model routing:
-
-1. **Image Preprocessing**: Resize to maximum 1000x1000, apply configurable cropping, optimize for AI processing
-2. **Quality Gate**: BFM (Bulk Flow Meter) classification using FastAI model to filter poor quality images
-3. **Vision Processing**: Route to selected AI backend for meter reading extraction
-4. **Post-processing**: Color classification for last digit determination, confidence scoring
-5. **Metadata Persistence**: Asynchronous storage of request, response, and feedback data
-
-### Storage and Configuration <a href="#storage-and-configuration" id="storage-and-configuration"></a>
-
-#### Storage Architecture <a href="#storage-architecture" id="storage-architecture"></a>
-
-FlowVision uses a multi-tier storage approach:
-
-* **AWS S3**: Image storage with presigned URLs and 60-second expiration
-* **PostgreSQL**: Structured metadata storage for requests, responses, and feedback
-* **Redis**: Rate limiting and session caching
-
-#### Configuration Management <a href="#configuration-management" id="configuration-management"></a>
-
-The system uses a centralized `Config` class that loads from `config.yaml` and environment variables. Key configuration areas include:
-
-* Vision model selection (`vision_model`)
-* Image processing parameters (`image_resizing`, `image_crop`)
-* Model paths for FastAI and YOLO models
-* Storage credentials and endpoints
-* Logging configuration
-
-
-
-_Generated by_ [_Deepwiki_](https://deepwiki.com/arghyam/flowvision/1-overview)_/Devin, edited by Sreechand_
+| Path | Contents |
+| --- | --- |
+| `src/run.py` | Development entry point (uvicorn) |
+| `src/routes.py` | FastAPI app and endpoints |
+| `src/service/api/image_service.py` | Request orchestration: download, pipeline, response building |
+| `src/service/api/metadata_service.py`, `database.py` | Background persistence to PostgreSQL |
+| `src/service/vision/inference_utils.py` | Model loading, image enhancement, digit detection |
+| `src/models/models.py` | Pydantic request and response models |
+| `src/models/*` (binary) | The three trained models |
+| `src/conf/` | `config.yaml`, config loader, logging setup, SQL queries |
+| `Dockerfile` | Production image (gunicorn, auto-sized workers) |
+| `flowvision.service` | Example systemd unit |
+| `flowvision_db_ddl.sql` | Database and table creation script |

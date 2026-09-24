@@ -1,258 +1,156 @@
 # Getting Started
 
-This document provides step-by-step instructions for setting up, configuring, and deploying the FlowVision AI-powered meter reading extraction system. It covers installation of dependencies, environment configuration, service deployment, and initial verification.
-
-For detailed information about the system architecture and component interactions, see [Architecture Overview](architecture-overview.md). For complete API documentation and endpoint details, see [API Reference](api-reference.md).
+This guide covers running FlowVision locally, with Docker, and as a systemd service. For how the pieces fit together, see [Architecture Overview](architecture-overview.md). For the endpoints, see [API Reference](api-reference.md).
 
 ### Prerequisites <a href="#prerequisites" id="prerequisites"></a>
 
-FlowVision requires the following system components and external services:
+| Component | Requirement | Notes |
+| --- | --- | --- |
+| Python | 3.11 or newer | The Docker image uses 3.12. 3.13 also works. |
+| PostgreSQL | Optional | Stores requests, responses and feedback. The API works without it but logs a write error per request. |
+| GPU | Optional | PyTorch uses CUDA automatically if available. On CPU a request takes roughly 0.3–1.5 s. |
+| RAM | 4 GB or more per worker | Each worker loads all three models (~250 MB on disk). |
 
-#### System Requirements <a href="#system-requirements" id="system-requirements"></a>
+The trained models are committed in `src/models/`, so there is nothing extra to download.
 
-| Component  | Requirement        | Purpose                               |
-| ---------- | ------------------ | ------------------------------------- |
-| Python     | 3.8+               | Core runtime environment              |
-| PostgreSQL | 9.6+               | Metadata and request/response storage |
-| Redis      | 5.0+               | Rate limiting and caching             |
-| AWS S3     | Compatible storage | Image file storage                    |
+### Run locally <a href="#run-locally" id="run-locally"></a>
 
-#### Hardware Requirements <a href="#hardware-requirements" id="hardware-requirements"></a>
+**1. Create a virtual environment and install dependencies**
 
-* **CPU**: Multi-core processor (8+ cores recommended for concurrent processing)
-* **RAM**: 8GB minimum, 16GB+ recommended for ML models
-* **GPU**: Optional but recommended for Qwen2-VL local inference (`gpu_type: "cuda"` in config)
-* **Storage**: 10GB+ for model files and temporary processing
+```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows (Git Bash): source .venv/Scripts/activate
 
-#### External Service Dependencies <a href="#external-service-dependencies" id="external-service-dependencies"></a>
+# Optional, CPU-only machines: install the much smaller CPU build of PyTorch first
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
-* **OpenAI API**: Required for GPT-4o vision service (if selected in config)
-* **AWS S3**: For image storage with presigned URL generation
-* **LocalStack** (development): Local S3-compatible service for testing
-
-### Installation <a href="#installation" id="installation"></a>
-
-#### Environment Setup <a href="#environment-setup" id="environment-setup"></a>
-
-<figure><img src=".gitbook/assets/Screenshot 2025-07-28 at 12.13.12 PM.png" alt="" width="375"><figcaption></figcaption></figure>
-
-**Setup Workflow with Code Entity Mapping**
-
-
-
-#### Step 1: Repository and Environment <a href="#step-1-repository-and-environment" id="step-1-repository-and-environment"></a>
-
-```markdown
-# Clone repository
-git clone <repository-url>
-cd flowvision# 
-
-Create virtual environment
-conda create -n flowvision python=3.8
-conda activate flowvision
-
-# OR using venv
-python3 -m venv venv
-source venv/bin/activate  # Linux/Mac
-# venv\Scripts\activate   # Windows
-```
-
-#### Step 2: Install Dependencies <a href="#step-2-install-dependencies" id="step-2-install-dependencies"></a>
-
-Install all required Python packages from the requirements specification:
-
-```
 pip install -r requirements.txt
 ```
 
-Key dependencies installed include:
+**2. Start the server from the repository root**
 
-| Category         | Packages                                                              | Purpose                             |
-| ---------------- | --------------------------------------------------------------------- | ----------------------------------- |
-| Web Framework    | `fastapi[standard]==0.115.4`, `uvicorn==0.32.0`                       | API server and ASGI runtime         |
-| ML/AI            | `torch==2.5.1`, `transformers`, `ultralytics==8.3.91`, `fastai<2.8.0` | Vision model inference              |
-| Storage          | `boto3==1.35.54`, `SQLAlchemy==2.0.36`, `psycopg2-binary==2.9.10`     | S3 and database connectivity        |
-| Image Processing | `opencv-python==4.11.0.86`, `pillow==11.1.0`                          | Image preprocessing and enhancement |
-| Rate Limiting    | `redis==6.0.0`, `fastapi-limiter==0.1.6`                              | Request throttling                  |
-
-### Configuration <a href="#configuration" id="configuration"></a>
-
-#### Configuration Structure <a href="#configuration-structure" id="configuration-structure"></a>
-
-<figure><img src=".gitbook/assets/Screenshot 2025-07-28 at 12.16.04 PM.png" alt=""><figcaption></figcaption></figure>
-
-**Configuration Structure with YAML Keys**
-
-#### Step 3: Configure config.yaml <a href="#step-3-configure-configyaml" id="step-3-configure-configyaml"></a>
-
-Edit the main configuration file located at `src/conf/config.yaml`:
-
-**Vision Model Selection**
-
-Choose one of the three available vision backends:
-
-```markdown
-# For OpenAI GPT-4o (requires OpenAI API key)
-vision_model: "gpt-4o"
-
-# For local Qwen2-VL inference (requires GPU)
-vision_model: "Qwen/Qwen2-VL-7B-Instruct"
-gpu_type: "cuda"  # or "mps" for Apple Silicon
-
-# For InceptionV3 with specialized models (default)
-vision_model: "InceptionV3"
-```
-
-**Database Configuration**
-
-Configure PostgreSQL connection parameters:
-
-```markdown
-database:  
-    host: localhost  
-    port: 5432  
-    dbname: "flowvision"  
-    username:   
-    password: 
-```
-
-**S3 Storage Configuration**
-
-Set up image storage backend:
-
-```markdown
-s3:  
-    endpoint_url: "http://localhost.localstack.cloud:4566"  # LocalStack for development  
-    bucket_name: "flowvision-test-bucket"
-presigned_url_expiration: 60  # seconds
-```
-
-**ML Model Paths**
-
-Specify paths to pre-trained model files:
-
-```markdown
-models:  
-    bfm_classification: "/path/to/src/models/bfm_fastai"  
-    individual_numbers: "/path/to/src/models/individual_number_recognition_yolo11l.pt"  
-    color_classification: "/path/to/src/models/color_classification_fastai"
-```
-
-#### Step 4: Environment Variables <a href="#step-4-environment-variables" id="step-4-environment-variables"></a>
-
-Create a `.env` file in the project root with the following variables:
-
-```markdown
-# OpenAI API (if using gpt-4o)
-OPENAI_API_KEY=your_openai_api_key_here
-
-# AWS S3 ConfigurationAWS_ACCESS_KEY_ID=your_aws_access_key
-AWS_SECRET_ACCESS_KEY=your_aws_secret_key
-AWS_DEFAULT_REGION=us-east-1
-
-# Database credentials (if different from config.yaml)
-POSTGRES_PASSWORD=your_postgres_password
-
-# Application environment
-ENVIRONMENT=development
-DEBUG=true
-```
-
-### Deployment <a href="#deployment" id="deployment"></a>
-
-#### Step 5: Start Required Services <a href="#step-5-start-required-services" id="step-5-start-required-services"></a>
-
-**PostgreSQL Database**
-
-Create the required database:
-
-```
-CREATE DATABASE flowvision;
-CREATE USER postgres WITH PASSWORD 'postgres';
-GRANT ALL PRIVILEGES ON DATABASE flowvision TO postgres;
-```
-
-**Redis Service**
-
-Start Redis for rate limiting:
-
-```
-# Using Dockerdocker run -d -p 6379:6379 redis:alpine# Or using system package managersudo systemctl start redis
-```
-
-**S3 Storage Setup**
-
-For development with LocalStack:
-
-```markdown
-# Start LocalStack
-docker run -d -p 4566:4566 localstack/localstack
-
-# Create S3 bucket
-aws --endpoint-url=http://localhost:4566 s3 mb s3://flowvision-test-bucket
-```
-
-#### Step 6: Launch Application <a href="#step-6-launch-application" id="step-6-launch-application"></a>
-
-Start the FastAPI server using the configured ASGI application:
-
-```
+```bash
 python src/run.py
 ```
 
-The application will start on the configured port (default: 8000) with the following endpoints exposed:
+Run it from the repository root. Config and model paths (`src/conf/config.yaml`, `src/models/...`) are resolved relative to the current directory, so starting from anywhere else fails with `FileNotFoundError`.
 
-* `POST /flowvision/v1/uploadImage` - Image upload with S3 storage
-* `POST /flowvision/v1/extract-reading` - Meter reading extraction
-* `POST /flowvision/v1/feedback` - User feedback logging
+The server listens on port 8000 by default. Startup takes 10–30 seconds while the models load. It is ready when the log shows `Application startup complete`.
 
-### Verification <a href="#verification" id="verification"></a>
+**3. Check it works**
 
-#### Step 7: Health Check <a href="#step-7-health-check" id="step-7-health-check"></a>
+```bash
+curl http://localhost:8000/
+# {"message":"Hi, I am the meter reading assistant."}
 
-Verify the system is running correctly:
-
-```markdown
-# Check API health
-curl http://localhost:8000/health
-
-# Verify rate limiting (Redis connection)
-curl http://localhost:8000/flowvision/v1/extract-reading -X POST
-
-# Test image upload
-curl -X POST "http://localhost:8000/flowvision/v1/uploadImage" \     -F "image=@path/to/test/image.jpg"
+curl -X POST http://localhost:8000/flowvision/v1/extract-reading \
+  -H "Content-Type: application/json" \
+  -d '{"imageURL": "https://example.com/path/to/meter.jpg"}'
 ```
 
-#### Service Component Status <a href="#service-component-status" id="service-component-status"></a>
+The image must be reachable over HTTP(S) from the server. To test with a local file, serve its folder with `python -m http.server 8765` and use `http://127.0.0.1:8765/<file>` as the URL.
 
-<figure><img src=".gitbook/assets/Screenshot 2025-07-28 at 12.23.10 PM.png" alt="" width="375"><figcaption></figcaption></figure>
+Interactive API docs are available at `http://localhost:8000/docs` while the server is running.
 
-**Service Component Health Verification**
+### Configuration <a href="#configuration" id="configuration"></a>
 
-#### Test Vision Model Loading <a href="#test-vision-model-loading" id="test-vision-model-loading"></a>
+#### config.yaml <a href="#config-yaml" id="config-yaml"></a>
 
-Verify your selected vision model loads correctly:
+Settings live in `src/conf/config.yaml`. To use a different file, set the `CONFIG_PATH` environment variable.
 
-```markdown
-# Check logs for model loading messages
-tail -f logs/api_logs/FlowVision.log
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `log_level` | `info` | uvicorn log level (used by `run.py`) |
+| `image_download_timeout` | `30` | Seconds to wait when downloading the image |
+| `app_server.port` | `8000` | Port used by `run.py` |
+| `app_server.app` | `routes:app` | ASGI app used by `run.py` |
+| `logs.*` | `logs/...` | Log folders and logger names (see [Logs](#logs)) |
+| `models.*` | `src/models/...` | Paths to the three model files |
+| `image_enhancement.*` | see file | Sharpening, contrast (CLAHE) and colour boost applied before digit detection |
 
-# Test with sample image from config
-python -c "
-from src.conf.config import Config
-config = Config()
-print(f'Vision model: {config.vision_model}')
-print(f'Test image: {config.test.sample_image}')
-"
+#### Environment variables <a href="#environment-variables" id="environment-variables"></a>
+
+Environment variables can be set in the shell or in a `.env` file, which is loaded automatically.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CONFIG_PATH` | `src/conf/config.yaml` | Config file location |
+| `FLOWVISION_DB_HOST` | `localhost` | PostgreSQL host |
+| `FLOWVISION_DB_PORT` | `5432` | PostgreSQL port |
+| `FLOWVISION_DB_NAME` | `flowvision` | Database name |
+| `FLOWVISION_DB_USERNAME` | `postgres` | Database user |
+| `FLOWVISION_DB_PASSWORD` | `postgres` | Database password |
+
+Do not commit real credentials in `.env` files.
+
+### Database setup <a href="#database-setup" id="database-setup"></a>
+
+`flowvision_db_ddl.sql` creates the database, a user and the `flowvision_extraction_data` table. Replace `yourpass` first, then run it as a PostgreSQL superuser:
+
+```bash
+psql -U postgres -f flowvision_db_ddl.sql
 ```
 
-### Next Steps <a href="#next-steps" id="next-steps"></a>
+Then point the service at it with the `FLOWVISION_DB_*` variables above. The table layout is described in [Architecture Overview](architecture-overview.md#storage).
 
-After successful deployment:
+### Run with Docker <a href="#run-with-docker" id="run-with-docker"></a>
 
-1. **Configure Vision Service**: Select and configure your preferred vision backend by reviewing [Vision Services](https://deepwiki.com/arghyam/flowvision/3.2-vision-services)
-2. **Set up Monitoring**: Configure logging and monitoring as detailed in [Configuration Files](https://deepwiki.com/arghyam/flowvision/4.1-configuration-files)
-3. **API Integration**: Begin integrating with the API endpoints documented in [API Endpoints](https://deepwiki.com/arghyam/flowvision/2.1-api-endpoints)
-4. **Model Training**: If using custom models, see [Machine Learning Models](https://deepwiki.com/arghyam/flowvision/6-machine-learning-models) for training procedures
+```bash
+docker build -t flowvision .
+docker run -p 8000:8000 \
+  -e FLOWVISION_DB_HOST=my-db-host \
+  -e FLOWVISION_DB_PASSWORD=secret \
+  flowvision
+```
 
-For troubleshooting deployment issues, consult [Error Handling](https://deepwiki.com/arghyam/flowvision/7.3-error-handling) for common error codes and resolution steps.
+The container runs gunicorn with uvicorn workers and sizes itself from the available CPUs and GPUs:
+
+* **CPU only:** workers = half the CPUs (between 2 and 8), request timeout 300 s
+* **With GPUs:** one worker per GPU (plus one on large machines), request timeout 600 s
+
+It prints its choice at startup, for example `[auto] CPU=8 GPU=0 WORKERS=4 TIMEOUT=300`. To override the automatic sizing, set these with `-e`:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `WORKERS` | auto | Number of gunicorn worker processes |
+| `TIMEOUT` | auto | Worker timeout in seconds |
+| `PREFER_GPU` | `true` | Set to `false` to size workers by CPU even if GPUs are present |
+| `GRACEFUL_TIMEOUT` | `60` | Seconds to finish in-flight requests on shutdown |
+| `KEEPALIVE` | `30` | HTTP keep-alive seconds |
+| `MAX_REQUESTS` / `MAX_REQUESTS_JITTER` | `200` / `50` | Recycle each worker after this many requests |
+| `LOG_LEVEL` | `info` | gunicorn log level |
+
+Each worker loads its own copy of the models, so memory use grows with `WORKERS`.
+
+### Run as a systemd service <a href="#run-as-a-systemd-service" id="run-as-a-systemd-service"></a>
+
+`flowvision.service` is an example unit that runs `src/run.py` from a virtual environment. Before installing it, adjust the paths for your server:
+
+* `WorkingDirectory` must be the repository root (the folder containing `src/`), for the reason given in [Run locally](#run-locally).
+* `ExecStart` must point at the virtual environment's `python` and at `src/run.py`.
+
+```bash
+sudo cp flowvision.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now flowvision
+journalctl -u flowvision -f
+```
+
+### Logs <a href="#logs" id="logs"></a>
+
+Logs are written under `logs/` in the working directory and rotated at midnight:
+
+| File | Contents |
+| --- | --- |
+| `logs/api_logs/api.log` | Service events and errors, with stack traces |
+| `logs/extraction_request_logs/extraction_request.log` | Every extraction request and response as JSON |
+| `logs/feedback_request_logs/feedback_request.log` | Every feedback request and response as JSON |
+
+### Troubleshooting <a href="#troubleshooting" id="troubleshooting"></a>
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `FileNotFoundError: src/conf/config.yaml` at startup | The server was not started from the repository root. `cd` there, or set `CONFIG_PATH` and absolute model paths. |
+| `OperationalError ... connection refused` in `api.log` | PostgreSQL is unreachable. The API keeps working, but nothing is stored. Check the `FLOWVISION_DB_*` variables. |
+| Response has `"statusCode": 500` and an error such as `404 Client Error` | The server could not download `imageURL`. Check that the URL is reachable from the server, not just from your machine. |
+| Every image comes back `UNCLEAR` / `Image quality too poor for recognition` | The quality model was trained on close-up photos of the meter face. Wide shots that include lots of background are usually rejected. Crop to the meter face. |

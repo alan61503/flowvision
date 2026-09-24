@@ -1,7 +1,6 @@
 import os
 import sqlalchemy as db
 from sqlalchemy import text
-from conf.config import Config
 
 class DatabaseService:
     def __init__(self):
@@ -13,24 +12,9 @@ class DatabaseService:
             port=int(os.environ.get("FLOWVISION_DB_PORT", 5432)),
             database=os.environ.get("FLOWVISION_DB_NAME", "flowvision"),
         )
-        self.engine = db.create_engine(url_object)
-
-
-    def get_connection(self) -> db.Connection:
-        return self.engine.connect()
-
-    def release_connection(self, conn: db.Connection):
-        conn.close()
+        self.engine = db.create_engine(url_object, pool_pre_ping=True)
 
     def upsert(self, sql, params):
-        conn = self.get_connection()
-        try:
+        # engine.begin() commits on success, rolls back on error and always releases the connection
+        with self.engine.begin() as conn:
             conn.execute(statement=text(sql), parameters=params)
-            conn.commit()
-        except Exception as e:
-            raise e
-        finally:
-            self.release_connection(conn=conn)
-
-    def update(self):
-        pass

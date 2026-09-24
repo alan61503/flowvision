@@ -10,4 +10,4 @@ if __name__ == "__main__":
   log_level = config.find("log_level", "info")
 
   print("Starting server")
-  uvicorn.run(app="routes:app", host="0.0.0.0", port=port, log_level=log_level, timeout_keep_alive=60)
+  uvicorn.run(app=app, host="0.0.0.0", port=port, log_level=log_level, timeout_keep_alive=60)

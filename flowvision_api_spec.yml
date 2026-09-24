@@ -2,102 +2,150 @@ openapi: 3.1.0
 info:
   title: JJM Meter Reading Extraction API(s)
   description: >-
-    Set of API specifications for extracting meter reading from an image
-    `/flowvision/v1`.
+    Extracts water meter readings from images and collects feedback on them.
+    Base path `/flowvision/v1`.
+
+
+    Note: processing errors are returned with HTTP status 200 and
+    `responseCode: ERROR` / `statusCode: 500` in the body. Only request
+    validation failures return a non-200 HTTP status (422).
   version: v1
-  x-logo:
-    url: https://fastapi.tiangolo.com/img/logo-margin/logo-teal.png
 paths:
+  /:
+    get:
+      tags:
+        - health
+      summary: Liveness check
+      operationId: root__get
+      responses:
+        '200':
+          description: Service is up and models are loaded
+          content:
+            application/json:
+              example:
+                message: Hi, I am the meter reading assistant.
   /flowvision/v1/extract-reading:
     post:
       tags:
         - image-handlers
       summary: Extract Reading
-      description: Extract meter reading from an image.
+      description: >-
+        Downloads the image at `imageURL`, checks its quality, detects the
+        meter digits and returns the reading.
       operationId: extract_reading_flowvision_v1_extract_reading_post
       requestBody:
+        required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ExtractReadingRequest'
+              $ref: '#/components/schemas/ReadingExtractionRequest'
             examples:
-              image-handlers:
-                summary: Extract reading example
+              minimal:
+                summary: Only the image URL
+                value:
+                  imageURL: https://my-bucket.s3.amazonaws.com/meters/1234.jpg
+              full:
+                summary: With request ID, timestamp and metadata
                 value:
                   id: 2800d121-02b4-471d-bc33-be3a56f8db2a
-                  ts: 1729600269
-                  imageURL: https://test-bucket.s3.amazonaws.com/path/to/your/object.jpg
-        required: true
+                  ts: '2026-09-24T10:40:17'
+                  imageURL: https://my-bucket.s3.amazonaws.com/meters/1234.jpg
+                  metadata:
+                    meterId: M7711086
       responses:
         '200':
-          description: Successful reading extraction
+          description: >-
+            Request processed (check `result.status`), or a processing error
+            (`responseCode: ERROR`, see the `error` example).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ExtractReadingResponse'
-              example:
-                id: 2800d121-02b4-471d-bc33-be3a56f8db2a
-                ts: 1729600269
-                responseCode: OK
-                statusCode: 200
-                result:
-                  status: SUCCESS
-                  correlationId: cfde9907-55be-4820-b575-f28a476e2104
-                  data:
-                    meterReading: 24506.9
-                    meterBrand: Belanto
+                $ref: '#/components/schemas/ReadingExtractionResponse'
+              examples:
+                success:
+                  summary: Reading extracted
+                  value:
+                    id: 44939270-210b-467d-a73a-ca32d9ee8591
+                    ts: '2026-09-24T10:40:17.559018'
+                    responseCode: OK
+                    statusCode: 200
+                    result:
+                      status: SUCCESS
+                      correlationId: 71e6df84-463a-4fd7-b659-769e20bbbf23
+                      data:
+                        meterReading: '024965'
+                        processingTime: 0.466612
+                        qualityStatus: good
+                        qualityConfidence: 0.6666
+                        lastDigitColor: black
+                        colorConfidence: 0.9723
+                unclear:
+                  summary: Image rejected by the quality check
+                  value:
+                    id: 5054dd8b-d4cb-43b4-952b-97ccfa2d60ce
+                    ts: '2026-09-24T10:48:24.504769'
+                    responseCode: OK
+                    statusCode: 200
+                    result:
+                      status: UNCLEAR
+                      correlationId: 43421856-db05-4a46-a2a3-00d59112d37f
+                      data:
+                        meterReading: Image quality too poor for recognition
+                        processingTime: 0.173178
+                        qualityStatus: bad
+                        qualityConfidence: 0.8969
+                        lastDigitColor: unknown
+                        colorConfidence: 0.0
+                error:
+                  summary: Processing error (still HTTP 200)
+                  value:
+                    id: b901b35c-7b24-4ad0-a1e9-1d1f853e127c
+                    ts: '2026-09-24T10:48:25.413109'
+                    responseCode: ERROR
+                    statusCode: 500
+                    error:
+                      errorCode: 500
+                      errorMsg: >-
+                        404 Client Error: Not Found for url:
+                        https://my-bucket.s3.amazonaws.com/meters/missing.jpg
         '422':
           description: Validation Error
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-        '500':
-          description: Error in reading extraction
-          content:
-            application/json:
-              example:
-                id: 2800d121-02b4-471d-bc33-be3a56f8db2a
-                ts: 1729600269
-                responseCode: ERROR
-                statusCode: 500
-                error:
-                  errorCode: ERR_READING_EXTRACTION_FAILED
-                  errorMsg: Failed to extract meter reading
   /flowvision/v1/feedback:
     post:
       tags:
         - feedback
       summary: Provide Feedback
-      description: Provide feedback for an extracted reading from the image.
-      operationId: provide_feedback_flowvision_v1_feedback_post
+      description: Records whether an extracted reading was correct.
+      operationId: log_feedback_flowvision_v1_feedback_post
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/FeedbackRequest'
             examples:
               feedback:
-                summary: Provide feedback for an extracted reading from the image
+                summary: Reading was wrong
                 value:
-                  id: 2800d121-02b4-471d-bc33-be3a56f8db2a
-                  ts: 1729600269
-                  correlationId: cfde9907-55be-4820-b575-f28a476e2104
+                  correlationId: 71e6df84-463a-4fd7-b659-769e20bbbf23
                   data:
                     accurate: false
-                    extracted: 24509.6
-                    actual: 24406.9
-        required: true
+                    extracted: 24965
+                    actual: 24963
       responses:
         '200':
-          description: Feedback submitted successfully
+          description: Feedback accepted (stored in the background)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/FeedbackResponse'
               example:
-                id: 2800d121-02b4-471d-bc33-be3a56f8db2a
-                ts: 1729600269
+                id: 772d8818-9cf0-41f4-87e7-c24867d84e4d
+                ts: '2026-09-24T10:48:25.540585'
                 responseCode: OK
                 statusCode: 200
                 result:
@@ -108,328 +156,214 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-        '500':
-          description: Error submitting feedback
-          content:
-            application/json:
-              example:
-                id: 2800d121-02b4-471d-bc33-be3a56f8db2a
-                ts: 1729600269
-                responseCode: ERROR
-                statusCode: 500
-                error:
-                  errorCode: ERR_FEEDBACK_SUBMISSION_FAILED
-                  errorMsg: Failed to submit feedback
 components:
   schemas:
-    ExtractReadingRequest:
+    ReadingExtractionRequest:
+      type: object
+      required:
+        - imageURL
       properties:
         id:
           type: string
-          title: Id
+          format: uuid
+          description: Client request ID. Generated if omitted.
         ts:
           type: string
           format: date-time
-          title: Ts
+          description: Request timestamp. Defaults to time of receipt.
         imageURL:
           type: string
-          title: Imageurl
+          description: HTTP(S) URL of a JPEG or PNG meter image, reachable from the server.
         metadata:
           anyOf:
             - type: object
             - type: 'null'
-          title: Metadata
-      type: object
-      required:
-        - id
-        - ts
-        - imageURL
-        - metadata
-      title: ExtractReadingRequest
-    ExtractReadingResponse:
-      properties:
-        id:
-          type: string
-          title: Id
-        ts:
-          type: string
-          format: date-time
-          title: Ts
-        responseCode:
-          $ref: '#/components/schemas/ResponseCode'
-        statusCode:
-          $ref: '#/components/schemas/HTTPStatus'
-        errorCode:
-          anyOf:
-            - $ref: '#/components/schemas/ResponseError'
-            - type: 'null'
-        result:
-          anyOf:
-            - $ref: '#/components/schemas/ExtractReadingResultWrapper'
-            - type: 'null'
+          description: Arbitrary JSON stored with the request.
+    ReadingExtractionResponse:
       type: object
       required:
         - id
         - ts
         - responseCode
         - statusCode
-        - errorCode
-        - result
-      title: ExtractReadingResponse
-    ExtractReadingResultWrapper:
       properties:
-        status:
-          $ref: '#/components/schemas/ExtractReadingStatus'
-        correlationId:
-          anyOf:
-            - type: string
-            - type: 'null'
-          title: Correlationid
-        data:
-          $ref: '#/components/schemas/GetUploadUrlResultData'
+        id:
+          type: string
+          format: uuid
+        ts:
+          type: string
+          format: date-time
+        responseCode:
+          $ref: '#/components/schemas/ResponseCode'
+        statusCode:
+          type: integer
+          description: 200 when processed, 500 on a processing error.
+        error:
+          $ref: '#/components/schemas/Error'
+        result:
+          $ref: '#/components/schemas/ReadingExtractionResult'
+    ReadingExtractionResult:
       type: object
       required:
         - status
         - correlationId
-        - data
-      title: ExtractReadingResultWrapper
-    ExtractReadingStatus:
-      type: string
-      enum:
-        - NOMETER
-        - UNCLEAR
-        - INVALID
-        - SUCCESS
-      title: ExtractReadingStatus
-    FeddbackResultWrapper:
       properties:
         status:
-          $ref: '#/components/schemas/FeedbackStatus'
+          $ref: '#/components/schemas/Status'
+        correlationId:
+          type: string
+          format: uuid
+          description: Pass to /feedback to rate this reading.
+        data:
+          $ref: '#/components/schemas/ReadingExtractionResultData'
+    ReadingExtractionResultData:
       type: object
       required:
-        - status
-      title: FeddbackResultWrapper
-    FeedbackData:
+        - processingTime
+        - qualityStatus
+        - qualityConfidence
+        - lastDigitColor
+        - colorConfidence
+      properties:
+        meterReading:
+          type: string
+          description: >-
+            Digits read left to right (leading zeros kept, no decimal point),
+            or a short reason when status is UNCLEAR.
+        processingTime:
+          type: number
+          description: Seconds spent on the request, including image download.
+        qualityStatus:
+          type: string
+          enum:
+            - good
+            - bad
+        qualityConfidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        lastDigitColor:
+          type: string
+          enum:
+            - black
+            - red
+            - unknown
+        colorConfidence:
+          type: number
+          minimum: 0
+          maximum: 1
+    Status:
+      type: string
+      description: NOMETER is reserved and not currently returned.
+      enum:
+        - SUCCESS
+        - UNCLEAR
+        - NOMETER
+    FeedbackRequest:
+      type: object
+      required:
+        - correlationId
+        - data
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Client request ID. Generated if omitted.
+        ts:
+          type: string
+          format: date-time
+          description: Feedback timestamp. Defaults to time of receipt.
+        correlationId:
+          type: string
+          format: uuid
+          description: result.correlationId from the extraction response.
+        data:
+          $ref: '#/components/schemas/FeedbackRequestData'
+    FeedbackRequestData:
+      type: object
+      required:
+        - accurate
       properties:
         accurate:
           type: boolean
-          title: Accurate
         extracted:
           anyOf:
             - type: number
             - type: 'null'
-          title: Extracted
+          description: The reading that was extracted (logged, not stored).
         actual:
           anyOf:
             - type: number
             - type: 'null'
-          title: Actual
-      type: object
-      required:
-        - accurate
-        - extracted
-        - actual
-      title: FeedbackData
-    FeedbackRequest:
-      properties:
-        id:
-          type: string
-          title: Id
-        ts:
-          type: string
-          format: date-time
-          title: Ts
-        correlationId:
-          type: string
-          title: Correlationid
-        data:
-          $ref: '#/components/schemas/FeedbackData'
-      type: object
-      required:
-        - id
-        - ts
-        - correlationId
-        - data
-      title: FeedbackRequest
+          description: The correct reading, if known.
     FeedbackResponse:
-      properties:
-        id:
-          type: string
-          title: Id
-        ts:
-          type: string
-          format: date-time
-          title: Ts
-        responseCode:
-          $ref: '#/components/schemas/ResponseCode'
-        statusCode:
-          $ref: '#/components/schemas/HTTPStatus'
-        errorCode:
-          anyOf:
-            - $ref: '#/components/schemas/ResponseError'
-            - type: 'null'
-        result:
-          anyOf:
-            - $ref: '#/components/schemas/FeddbackResultWrapper'
-            - type: 'null'
       type: object
       required:
         - id
         - ts
         - responseCode
         - statusCode
-        - errorCode
-        - result
-      title: FeedbackResponse
-    FeedbackStatus:
-      type: string
-      enum:
-        - SUBMITTED
-        - FAILED
-      title: FeedbackStatus
-    GetUploadUrlResultData:
       properties:
-        imageURL:
+        id:
           type: string
-          title: Imageurl
-        expiry:
+          format: uuid
+        ts:
+          type: string
+          format: date-time
+        responseCode:
+          $ref: '#/components/schemas/ResponseCode'
+        statusCode:
           type: integer
-          title: Expiry
-      type: object
-      required:
-        - imageURL
-        - expiry
-      title: GetUploadUrlResultData
-    HTTPStatus:
-      type: integer
-      enum:
-        - 100
-        - 101
-        - 102
-        - 103
-        - 200
-        - 201
-        - 202
-        - 203
-        - 204
-        - 205
-        - 206
-        - 207
-        - 208
-        - 226
-        - 300
-        - 301
-        - 302
-        - 303
-        - 304
-        - 305
-        - 307
-        - 308
-        - 400
-        - 401
-        - 402
-        - 403
-        - 404
-        - 405
-        - 406
-        - 407
-        - 408
-        - 409
-        - 410
-        - 411
-        - 412
-        - 413
-        - 414
-        - 415
-        - 416
-        - 417
-        - 418
-        - 421
-        - 422
-        - 423
-        - 424
-        - 425
-        - 426
-        - 428
-        - 429
-        - 431
-        - 451
-        - 500
-        - 501
-        - 502
-        - 503
-        - 504
-        - 505
-        - 506
-        - 507
-        - 508
-        - 510
-        - 511
-      title: HTTPStatus
-      description: |-
-        HTTP status codes and reason phrases
-
-        Status codes from the following RFCs are all observed:
-
-            * RFC 7231: Hypertext Transfer Protocol (HTTP/1.1), obsoletes 2616
-            * RFC 6585: Additional HTTP Status Codes
-            * RFC 3229: Delta encoding in HTTP
-            * RFC 4918: HTTP Extensions for WebDAV, obsoletes 2518
-            * RFC 5842: Binding Extensions to WebDAV
-            * RFC 7238: Permanent Redirect
-            * RFC 2295: Transparent Content Negotiation in HTTP
-            * RFC 2774: An HTTP Extension Framework
-            * RFC 7725: An HTTP Status Code to Report Legal Obstacles
-            * RFC 7540: Hypertext Transfer Protocol Version 2 (HTTP/2)
-            * RFC 2324: Hyper Text Coffee Pot Control Protocol (HTCPCP/1.0)
-            * RFC 8297: An HTTP Status Code for Indicating Hints
-            * RFC 8470: Using Early Data in HTTP
-    HTTPValidationError:
-      properties:
-        detail:
-          items:
-            $ref: '#/components/schemas/ValidationError'
-          type: array
-          title: Detail
-      type: object
-      title: HTTPValidationError
+        error:
+          $ref: '#/components/schemas/Error'
+        result:
+          type: object
+          required:
+            - status
+          properties:
+            status:
+              type: string
+              enum:
+                - SUBMITTED
+                - FAILED
     ResponseCode:
       type: string
       enum:
         - OK
         - ERROR
-      title: ResponseCode
-    ResponseError:
-      properties:
-        errorCode:
-          type: string
-          title: Errorcode
-        errorMsg:
-          type: string
-          title: Errormsg
+    Error:
       type: object
       required:
         - errorCode
         - errorMsg
-      title: ResponseError
-    ValidationError:
       properties:
-        loc:
-          items:
-            anyOf:
-              - type: string
-              - type: integer
+        errorCode:
+          anyOf:
+            - type: string
+            - type: integer
+        errorMsg:
+          type: string
+    HTTPValidationError:
+      type: object
+      properties:
+        detail:
           type: array
-          title: Location
-        msg:
-          type: string
-          title: Message
-        type:
-          type: string
-          title: Error Type
+          items:
+            $ref: '#/components/schemas/ValidationError'
+    ValidationError:
       type: object
       required:
         - loc
         - msg
         - type
-      title: ValidationError
+      properties:
+        loc:
+          type: array
+          items:
+            anyOf:
+              - type: string
+              - type: integer
+        msg:
+          type: string
+        type:
+          type: string

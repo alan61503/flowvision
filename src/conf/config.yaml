@@ -1,5 +1,5 @@
 log_level: "info"
-file_size_limit: 10485760
+image_download_timeout: 30
 
 app_server:
   port: 8000
@@ -16,14 +16,6 @@ logs:
     path: "logs/extraction_request_logs"
     name: "ExtractionRequest"
 
-database:
-  host: localhost
-  port: 5432
-  dbname: "flowvision"
-  username: postgres
-  password: postgres
-
-
 # Model paths
 models:
   bfm_classification: "src/models/bfm_fastai"
@@ -38,7 +30,3 @@ image_enhancement:
   sharpening_beta: -0.5
   color_boost_alpha: 1.1
   color_boost_beta: 10
-
-# Test image paths
-test:
-  sample_image: "dataset/data_cleaned/classification_data/Good/20240909121001_C2268402_F20918_M7711086.png"

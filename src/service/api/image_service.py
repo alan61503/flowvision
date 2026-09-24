@@ -1,22 +1,19 @@
 import logging
-from http import HTTPStatus
-
 import traceback
+from http import HTTPStatus
 from datetime import datetime
 from uuid import uuid4, UUID
-
-from fastapi import BackgroundTasks
-from error.error import CustomHTTPException
-from models.models import Error, Status, ReadingExtractionRequest, ReadingExtractionResponse, ReadingExtractionResult, ReadingExtractionResultData, ResponseCode, FeedbackRequest, FeedbackResponseStatus, FeedbackResponse, FeedbackStatus, BaseResponse
-from conf.config import Config
-from service.api.metadata_service import MetadataStore
-from PIL import Image, ImageOps
-
-import requests
 from io import BytesIO
-import numpy as np
-import cv2
 
+import cv2
+import numpy as np
+import requests
+from fastapi import BackgroundTasks
+from PIL import Image
+
+from conf.config import Config
+from models.models import Error, Status, ReadingExtractionRequest, ReadingExtractionResponse, ReadingExtractionResult, ReadingExtractionResultData, ResponseCode, FeedbackRequest, FeedbackResponseStatus, FeedbackResponse, FeedbackStatus, BaseResponse
+from service.api.metadata_service import MetadataStore
 from service.vision.inference_utils import (
     load_bfm_classification,
     load_individual_numbers_model,
@@ -33,165 +30,105 @@ class ImageService:
         self.base_logger = logging.getLogger(config.find("logs.api_logger.name"))
         self.feedback_logger = logging.getLogger(config.find("logs.feedback_request_logger.name"))
         self.extraction_logger = logging.getLogger(config.find("logs.extraction_request_logger.name"))
+        self.download_timeout = config.find("image_download_timeout", 30)
 
         self.metadata_store = MetadataStore(config=config)
 
-        self.base_logger.info("Loading fine-tuned InceptionV3 models...")
-        # Load models from config
+        self.base_logger.info("Loading models...")
         self.bfm_classification_model = load_bfm_classification()
         self.individual_numbers_model = load_individual_numbers_model()
         self.color_classification_model = load_color_classification_model()
 
-
-    def download_image(self, imageURL):
-        image = Image.open(BytesIO(requests.get(imageURL).content))
-        image_buffer = BytesIO()
-        image.save(image_buffer, format="PNG")
-        return image_buffer.getvalue()
-
+    def download_image(self, image_url) -> np.ndarray:
+        """Download an image and return it as an RGB numpy array."""
+        response = requests.get(image_url, timeout=self.download_timeout)
+        response.raise_for_status()
+        return np.array(Image.open(BytesIO(response.content)).convert("RGB"))
 
     def extract_reading(self, request: ReadingExtractionRequest, background_tasks: BackgroundTasks) -> ReadingExtractionResponse:
-        status_code = HTTPStatus.OK.value
-        response_code = ResponseCode.OK
         request.id = request.id if request.id else uuid4()
         request.ts = request.ts if request.ts else datetime.now()
         background_tasks.add_task(self.metadata_store.store_request, request)
 
         try:
             start_time = datetime.now()
-            self.extraction_logger.info(str(request.model_dump_json()))
-            original_image = self.download_image(request.imageURL)
+            self.extraction_logger.info(request.model_dump_json())
+            image_rgb = self.download_image(request.imageURL)
 
-            # Get quality status from BFM classification
-            quality_result = classify_bfm_image(original_image, model=self.bfm_classification_model)
+            quality_result = classify_bfm_image(image_rgb, model=self.bfm_classification_model)
             quality_status = quality_result['prediction'].lower()
             quality_confidence = quality_result['confidence']
 
-            # Only proceed with meter reading if quality is good
-            if quality_status == 'good':
-                # Detect digits and get their bounding boxes
-                pil_image = Image.open(BytesIO(original_image))
-                meter_reading_result = direct_recognize_meter_reading(np.array(pil_image), self.individual_numbers_model)
-                # Expecting: meter_reading, sorted_boxes, sorted_classes
-                if isinstance(meter_reading_result, tuple) and len(meter_reading_result) >= 3:
-                    meter_reading, sorted_boxes, sorted_classes = meter_reading_result
-                else:
-                    meter_reading = meter_reading_result
-                    sorted_boxes, sorted_classes = [], []
+            color_result = {"prediction": "unknown", "confidence": 0.0}
 
-                # Convert tuple to string if necessary
-                meter_reading_str = str(meter_reading[0]) if isinstance(meter_reading, tuple) else str(meter_reading)
-            else:
-                meter_reading_str = "Image quality too poor for recognition"
-                sorted_boxes = []
+            # Only attempt a reading if the image passes the quality gate
+            if quality_status != 'good':
                 meter_reading_status = Status.UNCLEAR
+                meter_reading = "Image quality too poor for recognition"
+            else:
+                image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+                meter_reading, sorted_boxes, _ = direct_recognize_meter_reading(image_bgr, self.individual_numbers_model)
+
+                if meter_reading is None:
+                    meter_reading_status = Status.UNCLEAR
+                    meter_reading = "No digits detected in the image"
+                else:
+                    meter_reading_status = Status.SUCCESS
+                    last_digit_image = extract_digit_image(image_bgr, sorted_boxes[-1])
+                    color_result = classify_color_image(last_digit_image, model=self.color_classification_model)
 
             processing_time = (datetime.now() - start_time).total_seconds()
 
-            # Default color result
-            color_result = {"prediction": "unknown", "confidence": 0.0}
-
-            # Only classify color if digits were detected
-            if sorted_boxes and len(sorted_boxes) > 0:
-                image_array = np.frombuffer(original_image, np.uint8)
-                image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
-                last_box = sorted_boxes[-1]
-                last_digit_image = extract_digit_image(image, last_box)
-                color_result = classify_color_image(last_digit_image, model=self.color_classification_model)
-
-            last_digit_color = color_result['prediction'].lower()
-            color_confidence = color_result['confidence']
-
-            if 'nometer' in meter_reading_str.lower():
-                meter_reading_status = Status.NOMETER
-            elif 'unclear' in meter_reading_str.lower() or quality_status == 'bad':
-                meter_reading_status = Status.UNCLEAR
-            else:
-                meter_reading_status = Status.SUCCESS
-             
-            result = ReadingExtractionResult(
-                status=meter_reading_status,
-                correlationId=uuid4(),
-                data=ReadingExtractionResultData(
-                    meterReading=meter_reading_str,
-                    processingTime=processing_time,
-                    qualityStatus=quality_status,
-                    qualityConfidence=quality_confidence,
-                    lastDigitColor=last_digit_color,
-                    colorConfidence=color_confidence
-                )
-            )
             response = ReadingExtractionResponse(
                 id=request.id,
                 ts=datetime.now(),
-                responseCode=response_code,
-                statusCode=status_code,
-                result=result
+                responseCode=ResponseCode.OK,
+                statusCode=HTTPStatus.OK.value,
+                result=ReadingExtractionResult(
+                    status=meter_reading_status,
+                    correlationId=uuid4(),
+                    data=ReadingExtractionResultData(
+                        meterReading=meter_reading,
+                        processingTime=processing_time,
+                        qualityStatus=quality_status,
+                        qualityConfidence=quality_confidence,
+                        lastDigitColor=color_result['prediction'].lower(),
+                        colorConfidence=color_result['confidence']
+                    )
+                )
             )
             background_tasks.add_task(self.metadata_store.store_response, response)
-        except CustomHTTPException as e:
-            response = self.handle_custom_http_exception(error=e, id=request.id)
         except Exception as e:
-            response = self.handle_other_exceptions(error=e, id=request.id)
-  
-        self.extraction_logger.info(str(response.model_dump_json()))
+            response = self.handle_exception(error=e, id=request.id)
+
+        self.extraction_logger.info(response.model_dump_json())
         return response
 
     def log_feedback(self, request: FeedbackRequest, background_tasks: BackgroundTasks):
-        status_code = HTTPStatus.OK.value
-        response_code = ResponseCode.OK
         request.id = request.id if request.id else uuid4()
         request.ts = request.ts if request.ts else datetime.now()
         background_tasks.add_task(self.metadata_store.store_feedback, request)
 
-        try:
-            self.feedback_logger.info(str(request.model_dump_json()))
-            response = FeedbackResponse(
-                id=request.id,
-                ts=datetime.now(),
-                responseCode=response_code,
-                statusCode=status_code,
-                result=FeedbackStatus(status=FeedbackResponseStatus.SUBMITTED)
-            )
-        except Exception as e:
-            response = self.handle_other_exceptions(error=e, id=request.id)
-            
-        self.feedback_logger.info(str(response.model_dump_json()))
-        return response
-
-    def handle_custom_http_exception(self, error: CustomHTTPException, id: UUID):
-        status_code = error.status_code
-        response_code = ResponseCode.ERROR
-        error_code = error.error_code
-        error_message = error.detail
-        self.base_logger.error("\nError type: %s\nRequest id: %s\nTrace: %s", error_message, id, traceback.format_exc())
-
-        error = Error(errorCode=error_code, errorMsg=error_message)
-
-        response = BaseResponse(
-            id=id,
+        self.feedback_logger.info(request.model_dump_json())
+        response = FeedbackResponse(
+            id=request.id,
             ts=datetime.now(),
-            responseCode=response_code,
-            statusCode=status_code,
-            error=error
+            responseCode=ResponseCode.OK,
+            statusCode=HTTPStatus.OK.value,
+            result=FeedbackStatus(status=FeedbackResponseStatus.SUBMITTED)
         )
-        self.base_logger.error(str(response.model_dump_json()))
+        self.feedback_logger.info(response.model_dump_json())
         return response
 
-    def handle_other_exceptions(self, error: Exception, id: UUID):
-        status_code = HTTPStatus.INTERNAL_SERVER_ERROR.value
-        response_code = ResponseCode.ERROR
-        error_message = str(error)
+    def handle_exception(self, error: Exception, id: UUID):
         self.base_logger.error("\nError type: %s\nRequest id: %s\nTrace: %s", type(error).__name__, id, traceback.format_exc())
 
-        error = Error(errorCode=HTTPStatus.INTERNAL_SERVER_ERROR.value, errorMsg=error_message)
-
         response = BaseResponse(
             id=id,
             ts=datetime.now(),
-            responseCode=response_code,
-            statusCode=status_code,
-            error=error
+            responseCode=ResponseCode.ERROR,
+            statusCode=HTTPStatus.INTERNAL_SERVER_ERROR.value,
+            error=Error(errorCode=HTTPStatus.INTERNAL_SERVER_ERROR.value, errorMsg=str(error))
         )
-        self.base_logger.error(str(response.model_dump_json()))
+        self.base_logger.error(response.model_dump_json())
         return response

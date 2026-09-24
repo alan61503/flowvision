@@ -1,18 +1,15 @@
 # Flow Vision
 
-1. Clone repository and go to the root directory.
-2. Use `conda` or `python3 -m venv venv` to create a virtual environment. Activate the virtual environment.
-3. Run `pip install -r requirements.txt` to install all the required dependencies.
-4. Run `python src/run.py` to start ASGI server.
-5. The following are the endpoints exposed from the service
-    (a) POST /flowvision/v1/extract-reading
-    (b) POST /flowvision/v1/feedback
-6. The [API specification](flowvision_api_spec.yml) will give more details about the request and response structure
+Quick start for developers. Full details are in [Getting Started](getting-started.md).
 
-## Use Qwen2-VL model
+1. Clone the repository and `cd` into its root directory.
+2. Create and activate a virtual environment: `python -m venv .venv`, then `source .venv/bin/activate` (on Windows Git Bash, `source .venv/Scripts/activate`).
+3. Install dependencies: `pip install -r requirements.txt`. On a CPU-only machine, you can first run `pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu` to get a much smaller PyTorch.
+4. Start the server **from the repository root**: `python src/run.py`. It listens on port 8000 once the models have loaded.
+5. Endpoints:
+    - `GET /`: liveness check
+    - `POST /flowvision/v1/extract-reading`: extract a reading from an image URL
+    - `POST /flowvision/v1/feedback`: record whether a reading was correct
+6. See the [API Reference](api-reference.md) or the [OpenAPI spec](flowvision_api_spec.yml) for request and response formats. Interactive docs are at `http://localhost:8000/docs`.
 
-- Choose the `Qwen/Qwen2-VL-2B-Instruct` model in the conf/config.yaml file.
-
-## Use OpenAI model
-
-- Choose the `gpt-4o` model in the conf/config.yaml file.
+PostgreSQL is optional for local development. Without it, requests still work, but each one logs a database connection error. See [Getting Started](getting-started.md#database-setup) to set it up.
