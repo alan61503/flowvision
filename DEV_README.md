@@ -12,4 +12,6 @@ Quick start for developers. Full details are in [Getting Started](getting-starte
     - `POST /flowvision/v1/feedback`: record whether a reading was correct
 6. See the [API Reference](api-reference.md) or the [OpenAPI spec](flowvision_api_spec.yml) for request and response formats. Interactive docs are at `http://localhost:8000/docs`.
 
+To read meters from local photos without starting the server, run `python read_meter.py "water meter.jpg"`. It also accepts several files, a folder, or an image URL.
+
 PostgreSQL is optional for local development. Without it, requests still work, but each one logs a database connection error. See [Getting Started](getting-started.md#database-setup) to set it up.

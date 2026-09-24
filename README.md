@@ -46,6 +46,7 @@ Requests and responses are written to PostgreSQL in the background for auditing 
 
 | Path | Contents |
 | --- | --- |
+| `read_meter.py` | Command-line tool: read meters from local photos without the server |
 | `src/run.py` | Development entry point (uvicorn) |
 | `src/routes.py` | FastAPI app and endpoints |
 | `src/service/api/image_service.py` | Request orchestration: download, pipeline, response building |

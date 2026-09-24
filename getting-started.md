@@ -19,7 +19,10 @@ The trained models are committed in `src/models/`, so there is nothing extra to 
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate        # Windows (Git Bash): source .venv/Scripts/activate
+source .venv/bin/activate        # Windows Git Bash: source .venv/Scripts/activate
+                                 # Windows PowerShell: .venv\Scripts\Activate.ps1
+                                 # (if PowerShell blocks scripts, skip activating and run
+                                 #  .venv\Scripts\python instead of python in the commands below)
 
 # Optional, CPU-only machines: install the much smaller CPU build of PyTorch first
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
@@ -51,6 +54,28 @@ curl -X POST http://localhost:8000/flowvision/v1/extract-reading \
 The image must be reachable over HTTP(S) from the server. To test with a local file, serve its folder with `python -m http.server 8765` and use `http://127.0.0.1:8765/<file>` as the URL.
 
 Interactive API docs are available at `http://localhost:8000/docs` while the server is running.
+
+### Read meters from the command line <a href="#read-meters-from-the-command-line" id="read-meters-from-the-command-line"></a>
+
+To try the models on photos on your machine, you don't need the server. `read_meter.py` loads the models and runs the same pipeline directly:
+
+```bash
+python read_meter.py "water meter.jpg"          # one photo
+python read_meter.py photo1.jpg photo2.png      # several
+python read_meter.py path/to/folder             # every .jpg/.jpeg/.png in a folder
+python read_meter.py https://example.com/m.jpg  # an image URL
+```
+
+```
+water meter.jpg
+  Reading : 024965
+  Status  : SUCCESS
+  Quality : good (67% sure)
+  Last digit colour : black (100% sure)
+  Time    : 0.72s
+```
+
+It can be run from any directory, and nothing is written to the database.
 
 ### Configuration <a href="#configuration" id="configuration"></a>
 

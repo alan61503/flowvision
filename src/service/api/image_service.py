@@ -45,6 +45,43 @@ class ImageService:
         response.raise_for_status()
         return np.array(Image.open(BytesIO(response.content)).convert("RGB"))
 
+    def analyze_image(self, image_rgb: np.ndarray) -> dict:
+        """
+        Run the reading pipeline on an RGB image.
+
+        Returns a dict with 'status', 'meterReading', 'qualityStatus', 'qualityConfidence',
+        'lastDigitColor' and 'colorConfidence'.
+        """
+        quality_result = classify_bfm_image(image_rgb, model=self.bfm_classification_model)
+        quality_status = quality_result['prediction'].lower()
+
+        color_result = {"prediction": "unknown", "confidence": 0.0}
+
+        # Only attempt a reading if the image passes the quality gate
+        if quality_status != 'good':
+            status = Status.UNCLEAR
+            meter_reading = "Image quality too poor for recognition"
+        else:
+            image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+            meter_reading, sorted_boxes, _ = direct_recognize_meter_reading(image_bgr, self.individual_numbers_model)
+
+            if meter_reading is None:
+                status = Status.UNCLEAR
+                meter_reading = "No digits detected in the image"
+            else:
+                status = Status.SUCCESS
+                last_digit_image = extract_digit_image(image_bgr, sorted_boxes[-1])
+                color_result = classify_color_image(last_digit_image, model=self.color_classification_model)
+
+        return {
+            "status": status,
+            "meterReading": meter_reading,
+            "qualityStatus": quality_status,
+            "qualityConfidence": quality_result['confidence'],
+            "lastDigitColor": color_result['prediction'].lower(),
+            "colorConfidence": color_result['confidence'],
+        }
+
     def extract_reading(self, request: ReadingExtractionRequest, background_tasks: BackgroundTasks) -> ReadingExtractionResponse:
         request.id = request.id if request.id else uuid4()
         request.ts = request.ts if request.ts else datetime.now()
@@ -53,30 +90,8 @@ class ImageService:
         try:
             start_time = datetime.now()
             self.extraction_logger.info(request.model_dump_json())
-            image_rgb = self.download_image(request.imageURL)
-
-            quality_result = classify_bfm_image(image_rgb, model=self.bfm_classification_model)
-            quality_status = quality_result['prediction'].lower()
-            quality_confidence = quality_result['confidence']
-
-            color_result = {"prediction": "unknown", "confidence": 0.0}
-
-            # Only attempt a reading if the image passes the quality gate
-            if quality_status != 'good':
-                meter_reading_status = Status.UNCLEAR
-                meter_reading = "Image quality too poor for recognition"
-            else:
-                image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-                meter_reading, sorted_boxes, _ = direct_recognize_meter_reading(image_bgr, self.individual_numbers_model)
-
-                if meter_reading is None:
-                    meter_reading_status = Status.UNCLEAR
-                    meter_reading = "No digits detected in the image"
-                else:
-                    meter_reading_status = Status.SUCCESS
-                    last_digit_image = extract_digit_image(image_bgr, sorted_boxes[-1])
-                    color_result = classify_color_image(last_digit_image, model=self.color_classification_model)
-
+            analysis = self.analyze_image(self.download_image(request.imageURL))
+            status = analysis.pop("status")
             processing_time = (datetime.now() - start_time).total_seconds()
 
             response = ReadingExtractionResponse(
@@ -85,16 +100,9 @@ class ImageService:
                 responseCode=ResponseCode.OK,
                 statusCode=HTTPStatus.OK.value,
                 result=ReadingExtractionResult(
-                    status=meter_reading_status,
+                    status=status,
                     correlationId=uuid4(),
-                    data=ReadingExtractionResultData(
-                        meterReading=meter_reading,
-                        processingTime=processing_time,
-                        qualityStatus=quality_status,
-                        qualityConfidence=quality_confidence,
-                        lastDigitColor=color_result['prediction'].lower(),
-                        colorConfidence=color_result['confidence']
-                    )
+                    data=ReadingExtractionResultData(processingTime=processing_time, **analysis)
                 )
             )
             background_tasks.add_task(self.metadata_store.store_response, response)
